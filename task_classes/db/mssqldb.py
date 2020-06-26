@@ -69,6 +69,7 @@ class MSSqlTarget(luigi.Target):
         else:
             self.host = host
             self.port = 1433
+
         self.database = database
         self.user = user
         self.password = password
@@ -92,7 +93,7 @@ class MSSqlTarget(luigi.Target):
             cursor = connection.cursor()
             cursor.execute('INSERT INTO {marker_table}(update_id, target_table) VALUES(?, ?);'.format(
                 marker_table=self.marker_table),
-                (self.update_id, self.target_table))
+                (self.update_id, self.table))
 
             connection.commit()
 
@@ -134,6 +135,33 @@ class MSSqlTarget(luigi.Target):
 
         return row is not None
 
+    def get_session_id(self, connection=None):
+        if connection is None:
+            connection = self.connect()
+        cursor = connection.cursor()
+        try:
+            row = cursor.execute('SELECT id FROM {marker_table} WHERE update_id = ?;'.format(
+                marker_table=self.marker_table),
+                (self.update_id,)).fetchone()
+        except pyodbc.DatabaseError as e:
+            print(e.args[1])
+            raise
+
+        return row[0] if row else 0
+
+    def bulk_load(self, connection=None):
+        if connection is None:
+            connection = self.connect()
+        cursor = connection.cursor()
+        try:
+            row_count = cursor.execute("BULK INSERT {marker_table} FROM {csv_file} WITH (CODEPAGE = 'RAW');".format(
+                marker_table=self.marker_table, csv_file=self.bulk_package_path)).rowcount
+        except pyodbc.DatabaseError as e:
+            print(e.args[1])
+            raise
+
+        return row_count
+
     def connect(self):
         """
         Create a SQL Server connection and return a connection object
@@ -158,7 +186,8 @@ class MSSqlTarget(luigi.Target):
         # Test if table already exists
         connection = self.connect()
         cursor = connection.cursor()
-        # TODO: Try to do in SQLAlchemy
+        # TODO: Try to do in SQLAlchemy (luigi.contrib.sqla)
+        # TODO: Добавить поле Количество добавленных строк
         if not cursor.tables(table=self.marker_table, tableType='TABLE').fetchone():
             print('create')
             cursor.execute(

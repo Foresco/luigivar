@@ -18,7 +18,7 @@ class MsSqlBulkParser:
     файл должен быть в кодировке UTF-8"""
 
     def __init__(self, file_name):
-        with open(file_name, encoding='utf-8') as fd:
+        with open(file_name, 'rb') as fd:
             self.content = xmltodict.parse(fd.read())
 
     def get_columns(self):

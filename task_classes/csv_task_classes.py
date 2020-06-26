@@ -268,10 +268,15 @@ class PrepareCsvBulkPackages(luigi.Task):
     # Общие каталоги для обрабатываемых данных
     bulk_packages_directory = luigi.configuration.get_config().get('directories', 'bulk_packages', 'bulk_packages')
     patterns_directory = luigi.configuration.get_config().get('directories', 'bulk_patterns', 'bulk_patterns')
+
     # Свойства, переопределяемые в дочерних классах
     target_table = '' # Имя таблицы, для которой будут готовиться пакеты
     session_id = 0  # Идентификатор загрузочной сессии
     parse_pattern = dict()
+    source_task = luigi.Task  # Задача, выдающая исходный файл для загрузки
+    task_package_directory = ''
+
+    # TODO: Записывать количество строк в файле для последующего контроля загрузки
 
     def prepare_row(self, data_row):
         """Подготовка строки csv-файла на основе шаблона и строки данных"""
@@ -286,14 +291,19 @@ class PrepareCsvBulkPackages(luigi.Task):
                     row.append(data_row[self.parse_pattern[column_name]['col_num']])
                 elif 'const' in self.parse_pattern[column_name]:
                     row.append(self.parse_pattern[column_name]['const'])
-                elif column_name == 'session_id':
-                    row.append(self.session_id)
+            elif column_name == 'session_id':
+                row.append(self.session_id)
             # TODO: Сделать обработку отсутствия
         return row
 
+    def set_session_id(self):
+        # Получение идентификатора загрузочной сессии из предыдущей задачи (регистрация загрузочной сессии)
+        self.session_id = self.input().get_session_id()
+
     def run(self):
+        self.set_session_id()
         # TODO: Заменить open(self.output().path, 'w', newline='') на self.output().open('w') после исправления ошибки
-        with self.input().open() as input, open(self.output().path, 'w', newline='') as output:
+        with self.source_task().output().open() as input, open(self.output().path, 'w', newline='') as output:
             reader = csv.reader(input, delimiter='\t')
             for i in range(0, 1):
                 next(reader)  # Пропускаем заголовок или больше, если указано
@@ -303,11 +313,12 @@ class PrepareCsvBulkPackages(luigi.Task):
 
     @property
     def filename(self):
-        # Получаем первый файл список файлов в каталоге для bulk-пакетов
+        # Получаем первый файл из списка файлов в каталоге для bulk-пакетов
         filename = get_first_filename(self.bulk_packages_directory, '*.csv')
         if filename:
             return filename
         return os.path.join(self.bulk_packages_directory, 'package.csv')
 
     def output(self):
-        return luigi.LocalTarget(os.path.join(self.bulk_packages_directory, self.filename))
+        # TODO: Создавать директорию в случае ее отстуствия
+        return luigi.LocalTarget(os.path.join(self.bulk_packages_directory, self.task_package_directory, self.filename))
