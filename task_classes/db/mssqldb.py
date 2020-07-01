@@ -17,7 +17,6 @@
 
 import datetime
 import logging
-# import re
 import tempfile
 
 import luigi
@@ -48,6 +47,8 @@ class MSSqlTarget(luigi.Target):
     marker_table = luigi.configuration.get_config().get('mssql', 'marker-table', 'table_updates')
     driver = luigi.configuration.get_config().get('mssql', 'driver', '{ODBC Driver 11 for SQL Server}')
 
+    session_id = 0
+
     def __init__(self, host, database, user, password, table, update_id):
         """
         Initializes a MsSqlTarget instance.
@@ -76,14 +77,17 @@ class MSSqlTarget(luigi.Target):
         self.table = table
         self.update_id = update_id
 
-    def start(self, connection=None):
+    def touch(self, connection=None):
         """
-        Start update by inserting row in marker table.
+        Start loading by inserting row in marker table.
 
         IMPORTANT, If the marker table doesn't exist,
         the connection transaction will be aborted and the connection reset.
         Then the marker table will be created.
         """
+        if connection is None:
+            connection = self.connect()
+
         self.create_marker_table()  # TODO: Is it necessary every time?
 
         if connection is None:
@@ -97,36 +101,14 @@ class MSSqlTarget(luigi.Target):
 
             connection.commit()
 
-    def touch(self, connection=None):
-        """
-        Mark this update as complete by inserting datetime in field completed
-
-        If appropriate row in marker table doesn't exist,
-        start row will be created by start method
-        """
-        self.create_marker_table()  # TODO: Is it necessary every time?
-
-        if connection is None:
-            connection = self.connect()
-
-        # Create row
-        self.start(connection)
-
-        cursor = connection.cursor()
-        cursor.execute('UPDATE {marker_table} SET completed = GETDATE() WHERE update_id = ?;'.format(
-            marker_table=self.marker_table),
-            (self.update_id, ))
-        connection.commit()
-
-        # make sure update is properly marked
-        assert self.exists(connection)
-
     def exists(self, connection=None):
+        self.create_marker_table()  # TODO: Is it necessary every time?
         if connection is None:
             connection = self.connect()
         cursor = connection.cursor()
         try:
-            row = cursor.execute('SELECT 1 FROM {marker_table} WHERE update_id = ?;'.format(
+            # TODO: Add AND (target_table = ?)
+            row = cursor.execute('SELECT 1 FROM {marker_table} WHERE (update_id = ?);'.format(
                 marker_table=self.marker_table),
                 (self.update_id,)).fetchone()
         except pyodbc.DatabaseError as e:
@@ -140,7 +122,8 @@ class MSSqlTarget(luigi.Target):
             connection = self.connect()
         cursor = connection.cursor()
         try:
-            row = cursor.execute('SELECT id FROM {marker_table} WHERE update_id = ?;'.format(
+            # TODO: Add AND (target_table = ?)
+            row = cursor.execute('SELECT id FROM {marker_table} WHERE (update_id = ?);'.format(
                 marker_table=self.marker_table),
                 (self.update_id,)).fetchone()
         except pyodbc.DatabaseError as e:
@@ -149,18 +132,8 @@ class MSSqlTarget(luigi.Target):
 
         return row[0] if row else 0
 
-    def bulk_load(self, connection=None):
-        if connection is None:
-            connection = self.connect()
-        cursor = connection.cursor()
-        try:
-            row_count = cursor.execute("BULK INSERT {marker_table} FROM {csv_file} WITH (CODEPAGE = 'RAW');".format(
-                marker_table=self.marker_table, csv_file=self.bulk_package_path)).rowcount
-        except pyodbc.DatabaseError as e:
-            print(e.args[1])
-            raise
-
-        return row_count
+    def set_session_id(self):
+        self.session_id = self.get_session_id()
 
     def connect(self):
         """
@@ -183,18 +156,18 @@ class MSSqlTarget(luigi.Target):
         Create marker table if it doesn't exist.
         Use a separate connection since the transaction might have to be reset.
         """
-        # Test if table already exists
         connection = self.connect()
         cursor = connection.cursor()
         # TODO: Try to do in SQLAlchemy (luigi.contrib.sqla)
         # TODO: Добавить поле Количество добавленных строк
+        # Test if table already exists
         if not cursor.tables(table=self.marker_table, tableType='TABLE').fetchone():
             print('create')
             cursor.execute(
                 """ CREATE TABLE {marker_table} (
                         id            BIGINT    IDENTITY,
                         update_id     VARCHAR(128) NOT NULL,
-                        target_table  VARCHAR(128) DEFAULT NULL,
+                        target_table  VARCHAR(128) NOT NULL,
                         inserted      DATETIME DEFAULT(GETDATE()),
                         completed     DATETIME DEFAULT NULL,
                         PRIMARY KEY (update_id)
